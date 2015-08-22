@@ -8,12 +8,24 @@
   #include <utility/nrf51822/s110/nrf_sdm.h>
   #include <utility/nrf51822/s110/nrf_soc.h>
 #else
-  #include <s110/ble_gatts.h>
-  #include <s110/ble_hci.h>
-  #include <sd_common/ble_stack_handler_types.h>
+  #include <ble_gatts.h>
+  #include <ble_hci.h>
+  #include <ble_stack_handler_types.h>
   #include <nordic_common.h>
-  #include <s110/nrf_sdm.h>
-  #include <s110/nrf_soc.h>
+  #include <nrf_sdm.h>
+  #include <nrf_soc.h>
+#endif
+
+#ifndef __RFduino__
+uint32_t sd_ble_gatts_value_set(uint16_t handle, uint16_t offset, uint16_t* const p_len, uint8_t const * const p_value) {
+  ble_gatts_value_t val;
+
+  val.len = *p_len;
+  val.offset = offset;
+  val.p_value = (uint8_t*)p_value;
+
+  sd_ble_gatts_value_set(BLE_CONN_HANDLE_INVALID, handle, &val);
+}
 #endif
 
 #include "Arduino.h"
@@ -33,7 +45,7 @@ nRF51822::nRF51822() :
   BLEDevice(),
 
   _connectionHandle(BLE_CONN_HANDLE_INVALID),
-  _storeAuthStatus(false),
+  _storeBondData(false),
 
   _advDataLen(0),
   _broadcastCharacteristic(NULL),
@@ -48,8 +60,13 @@ nRF51822::nRF51822() :
   _remoteCharacteristicInfo(NULL),
   _remoteRequestInProgress(false)
 {
-  this->_authStatus = (ble_gap_evt_auth_status_t*)&this->_authStatusBuffer;
-  memset(&this->_authStatusBuffer, 0, sizeof(this->_authStatusBuffer));
+#ifdef __RFduino__
+  this->_authStatus = (ble_gap_evt_auth_status_t*)&this->_bondData;
+#else
+  this->_encKey = (ble_gap_enc_key_t*)&this->_bondData;
+#endif
+
+  memset(&this->_bondData, 0, sizeof(this->_bondData));
 }
 
 nRF51822::~nRF51822() {
@@ -82,6 +99,16 @@ void nRF51822::begin(unsigned char advertisementDataType,
   sd_softdevice_enable(NRF_CLOCK_LFCLKSRC_SYNTH_250_PPM, NULL);
 #else
   sd_softdevice_enable(NRF_CLOCK_LFCLKSRC_XTAL_20_PPM, NULL); // sd_nvic_EnableIRQ(SWI2_IRQn);
+#endif
+
+#ifndef __RFduino__
+    ble_enable_params_t enableParams = {
+        .gatts_enable_params = {
+            .service_changed = true
+        }
+    };
+
+    sd_ble_enable(&enableParams);
 #endif
 
 #ifdef NRF_51822_DEBUG
@@ -297,7 +324,7 @@ void nRF51822::begin(unsigned char advertisementDataType,
           for (int j = 0; j < valueLength; j++) {
             value[j] = (*characteristic)[j];
           }
-Serial.println(valueLength);
+
           sd_ble_gatts_value_set(this->_localCharacteristicInfo[localCharacteristicIndex].handles.value_handle, 0, &valueLength, value);
         }
 
@@ -415,7 +442,7 @@ Serial.println(valueLength);
 #ifdef NRF_51822_DEBUG
     Serial.println(F("Restoring bond data"));
 #endif
-    this->_bondStore->getData(this->_authStatusBuffer, 0, sizeof(this->_authStatusBuffer));
+    this->_bondStore->getData(this->_bondData, 0, sizeof(this->_bondData));
   }
 
   this->startAdvertising();
@@ -446,7 +473,7 @@ void nRF51822::poll() {
 #endif
 
         this->_connectionHandle = bleEvt->evt.gap_evt.conn_handle;
-        this->_storeAuthStatus = false;
+        this->_storeBondData = false;
 
         if (this->_eventListener) {
           this->_eventListener->BLEDeviceConnected(*this, bleEvt->evt.gap_evt.params.connected.peer_addr.addr);
@@ -490,13 +517,13 @@ void nRF51822::poll() {
 
         this->_remoteRequestInProgress = false;
 
-        if (this->_bondStore && this->_storeAuthStatus) {
+        if (this->_bondStore && this->_storeBondData) {
 #ifdef NRF_51822_DEBUG
           Serial.println(F("Storing bond data"));
 #endif
-          this->_bondStore->putData(this->_authStatusBuffer, 0, sizeof(this->_authStatusBuffer));
+          this->_bondStore->putData(this->_bondData, 0, sizeof(this->_bondData));
 
-          this->_storeAuthStatus = false;
+          this->_storeBondData = false;
         }
 
         this->startAdvertising();
@@ -519,8 +546,10 @@ void nRF51822::poll() {
       case BLE_GAP_EVT_SEC_PARAMS_REQUEST:
 #ifdef NRF_51822_DEBUG
         Serial.print(F("Evt Sec Params Request "));
+#ifdef __RFduino__
         Serial.print(bleEvt->evt.gap_evt.params.sec_params_request.peer_params.timeout);
         Serial.print(F(" "));
+#endif
         Serial.print(bleEvt->evt.gap_evt.params.sec_params_request.peer_params.bond);
         Serial.print(F(" "));
         Serial.print(bleEvt->evt.gap_evt.params.sec_params_request.peer_params.mitm);
@@ -540,17 +569,38 @@ void nRF51822::poll() {
 
           ble_gap_sec_params_t gapSecParams;
 
-          gapSecParams.timeout      = 30; // must be 30s
-          gapSecParams.bond         = true;
-          gapSecParams.mitm         = false;
-          gapSecParams.io_caps      = BLE_GAP_IO_CAPS_NONE;
-          gapSecParams.oob          = false;
-          gapSecParams.min_key_size = 7;
-          gapSecParams.max_key_size = 16;
+#ifdef __RFduino__
+          gapSecParams.timeout          = 30; // must be 30s
+#else
+          gapSecParams.kdist_periph.enc = 1;
+#endif
+          gapSecParams.bond             = true;
+          gapSecParams.mitm             = false;
+          gapSecParams.io_caps          = BLE_GAP_IO_CAPS_NONE;
+          gapSecParams.oob              = false;
+          gapSecParams.min_key_size     = 7;
+          gapSecParams.max_key_size     = 16;
 
+#ifdef __RFduino__
           sd_ble_gap_sec_params_reply(this->_connectionHandle, BLE_GAP_SEC_STATUS_SUCCESS, &gapSecParams);
+#else
+          ble_gap_sec_keyset_t keyset;
+
+          keyset.keys_central.p_enc_key  = NULL;
+          keyset.keys_central.p_id_key   = NULL;
+          keyset.keys_central.p_sign_key = NULL;
+          keyset.keys_periph.p_enc_key   = this->_encKey;
+          keyset.keys_periph.p_id_key    = NULL;
+          keyset.keys_periph.p_sign_key  = NULL;
+
+          sd_ble_gap_sec_params_reply(this->_connectionHandle, BLE_GAP_SEC_STATUS_SUCCESS, &gapSecParams, &keyset);
+#endif
         } else {
+#ifdef __RFduino__
           sd_ble_gap_sec_params_reply(this->_connectionHandle, BLE_GAP_SEC_STATUS_PAIRING_NOT_SUPP, NULL);
+#else
+          sd_ble_gap_sec_params_reply(this->_connectionHandle, BLE_GAP_SEC_STATUS_PAIRING_NOT_SUPP, NULL, NULL);
+#endif
         }
         break;
 
@@ -559,7 +609,11 @@ void nRF51822::poll() {
         Serial.print(F("Evt Sec Info Request "));
         // Serial.print(bleEvt->evt.gap_evt.params.sec_info_request.peer_addr);
         // Serial.print(F(" "));
+#ifdef __RFduino__
         Serial.print(bleEvt->evt.gap_evt.params.sec_info_request.div);
+#else
+        Serial.print(bleEvt->evt.gap_evt.params.sec_info_request.master_id.ediv);
+#endif
         Serial.print(F(" "));
         Serial.print(bleEvt->evt.gap_evt.params.sec_info_request.enc_info);
         Serial.print(F(" "));
@@ -568,22 +622,36 @@ void nRF51822::poll() {
         Serial.print(bleEvt->evt.gap_evt.params.sec_info_request.sign_info);
         Serial.println();
 #endif
+
+#ifdef __RFduino__
         if (this->_authStatus->periph_keys.enc_info.div == bleEvt->evt.gap_evt.params.sec_info_request.div) {
           sd_ble_gap_sec_info_reply(this->_connectionHandle, &this->_authStatus->periph_keys.enc_info, NULL);
         } else {
           sd_ble_gap_sec_info_reply(this->_connectionHandle, NULL, NULL);
         }
+#else
+        if (this->_encKey->master_id.ediv == bleEvt->evt.gap_evt.params.sec_info_request.master_id.ediv) {
+          sd_ble_gap_sec_info_reply(this->_connectionHandle, &this->_encKey->enc_info, NULL, NULL);
+        } else {
+          sd_ble_gap_sec_info_reply(this->_connectionHandle, NULL, NULL, NULL);
+        }
+#endif
         break;
 
       case BLE_GAP_EVT_AUTH_STATUS:
 #ifdef NRF_51822_DEBUG
         Serial.println(F("Evt Auth Status"));
+        Serial.println(bleEvt->evt.gap_evt.params.auth_status.auth_status);
 #endif
-        this->_storeAuthStatus = true;
-        *this->_authStatus = bleEvt->evt.gap_evt.params.auth_status;
 
-        if (this->_eventListener) {
-          this->_eventListener->BLEDeviceBonded(*this);
+        if (BLE_GAP_SEC_STATUS_SUCCESS == bleEvt->evt.gap_evt.params.auth_status.auth_status) {
+          this->_storeBondData = true;
+#ifdef __RFduino__
+          *this->_authStatus = bleEvt->evt.gap_evt.params.auth_status;
+#endif
+          if (this->_eventListener) {
+            this->_eventListener->BLEDeviceBonded(*this);
+          }
         }
         break;
 
@@ -641,7 +709,11 @@ void nRF51822::poll() {
         Serial.println(bleEvt->evt.gatts_evt.params.sys_attr_missing.hint);
 #endif
 
+#ifdef __RFduino__
         sd_ble_gatts_sys_attr_set(this->_connectionHandle, NULL, 0);
+#else
+        sd_ble_gatts_sys_attr_set(this->_connectionHandle, NULL, 0, 0);
+#endif
         break;
 
       case BLE_GATTC_EVT_PRIM_SRVC_DISC_RSP:
@@ -735,13 +807,17 @@ void nRF51822::poll() {
             this->_bondStore) {
           ble_gap_sec_params_t gapSecParams;
 
-          gapSecParams.timeout      = 30; // must be 30s
-          gapSecParams.bond         = true;
-          gapSecParams.mitm         = false;
-          gapSecParams.io_caps      = BLE_GAP_IO_CAPS_NONE;
-          gapSecParams.oob          = false;
-          gapSecParams.min_key_size = 7;
-          gapSecParams.max_key_size = 16;
+#ifdef __RFduino__
+          gapSecParams.timeout          = 30; // must be 30s
+#else
+          gapSecParams.kdist_periph.enc = 1;
+#endif
+          gapSecParams.bond             = true;
+          gapSecParams.mitm             = false;
+          gapSecParams.io_caps          = BLE_GAP_IO_CAPS_NONE;
+          gapSecParams.oob              = false;
+          gapSecParams.min_key_size     = 7;
+          gapSecParams.max_key_size     = 16;
 
           sd_ble_gap_authenticate(this->_connectionHandle, &gapSecParams);
         } else {
@@ -771,13 +847,17 @@ void nRF51822::poll() {
             this->_bondStore) {
           ble_gap_sec_params_t gapSecParams;
 
-          gapSecParams.timeout      = 30; // must be 30s
-          gapSecParams.bond         = true;
-          gapSecParams.mitm         = false;
-          gapSecParams.io_caps      = BLE_GAP_IO_CAPS_NONE;
-          gapSecParams.oob          = false;
-          gapSecParams.min_key_size = 7;
-          gapSecParams.max_key_size = 16;
+#ifdef __RFduino__
+          gapSecParams.timeout          = 30; // must be 30s
+#else
+          gapSecParams.kdist_periph.enc = 1;
+#endif
+          gapSecParams.bond             = true;
+          gapSecParams.mitm             = false;
+          gapSecParams.io_caps          = BLE_GAP_IO_CAPS_NONE;
+          gapSecParams.oob              = false;
+          gapSecParams.min_key_size     = 7;
+          gapSecParams.max_key_size     = 16;
 
           sd_ble_gap_authenticate(this->_connectionHandle, &gapSecParams);
         }

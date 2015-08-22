@@ -6,9 +6,9 @@
   #include <utility/nrf51822/s110/ble_gattc.h>
   #include <utility/nrf51822/s110/nrf_soc.h>
 #else
-  #include <s110/ble_gatts.h>
-  #include <s110/ble_gattc.h>
-  #include <s110/nrf_soc.h>
+  #include <ble_gatts.h>
+  #include <ble_gattc.h>
+  #include <nrf_soc.h>
 #endif
 
 #include "BLEDevice.h"
@@ -88,9 +88,14 @@ class nRF51822 : public BLEDevice
     BLECharacteristic*                _broadcastCharacteristic;
 
     uint16_t                          _connectionHandle;
-    bool                              _storeAuthStatus;
-    uint8_t                           _authStatusBuffer[((sizeof(ble_gap_evt_auth_status_t) + 3) / 4) * 4]  __attribute__ ((__aligned__(4)));
+    bool                              _storeBondData;
+#ifdef __RFduino__
+    uint8_t                           _bondData[((sizeof(ble_gap_evt_auth_status_t) + 3) / 4) * 4]  __attribute__ ((__aligned__(4)));
     ble_gap_evt_auth_status_t*        _authStatus;
+#else
+    uint8_t                           _bondData[((sizeof(ble_gap_enc_key_t) + 3) / 4) * 4]  __attribute__ ((__aligned__(4)));
+    ble_gap_enc_key_t*                _encKey;
+#endif
 
     unsigned char                     _numLocalCharacteristics;
     struct localCharacteristicInfo*   _localCharacteristicInfo;
